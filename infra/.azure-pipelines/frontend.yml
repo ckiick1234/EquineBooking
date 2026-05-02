@@ -103,7 +103,7 @@ stages:
   - stage: Deploy
     displayName: 'Deploy to Static Web App'
     dependsOn: Build
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    condition: succeeded()
     jobs:
       - deployment: DeployWeb
         displayName: 'Deploy Angular bundle'
