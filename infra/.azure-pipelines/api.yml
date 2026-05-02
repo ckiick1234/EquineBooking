@@ -44,14 +44,14 @@ variables:
   # Override these by linking a Variable Group to the pipeline (Pipelines →
   # this pipeline → Edit → Variables) or by setting them on the Environment.
   - name: azureServiceConnection
-    value: 'azure-equine'   # workload-identity service connection name
+    value: 'WardRanch'   # workload-identity service connection name
   - name: resourceGroup
     value: 'WardRanch'
   - name: functionAppName
     value: ''               # e.g. func-equine-dev-a1b2c3 — required for deploy
 
 pool:
-  vmImage: 'ubuntu-latest'
+  name: 'laptop'
 
 stages:
   - stage: Build
