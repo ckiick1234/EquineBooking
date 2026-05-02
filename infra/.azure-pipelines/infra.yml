@@ -39,7 +39,7 @@ parameters:
 
 variables:
   - name: azureServiceConnection
-    value: 'azure-equine'
+    value: 'WardRanch'
   - name: resourceGroup
     value: 'WardRanch'
   - name: location
@@ -52,7 +52,7 @@ variables:
     value: 'equine-$(Build.BuildId)'
 
 pool:
-  vmImage: 'ubuntu-latest'
+  name: 'laptop'
 
 stages:
   - stage: Validate
