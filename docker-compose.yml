@@ -1,0 +1,50 @@
+# Local development services. Bring up with `docker compose up -d`.
+#
+# Notes:
+# - The Cosmos DB Linux emulator self-signs its TLS cert on startup.
+#   The well-known emulator account key (used in connection strings below)
+#   is published in Microsoft docs and is safe to commit.
+# - Azurite needs its three ports mapped (blob/queue/table). The Functions
+#   runtime uses the blob/queue endpoints for AzureWebJobsStorage.
+
+services:
+  cosmos:
+    image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-preview
+    container_name: equine-cosmos
+    tty: true
+    restart: unless-stopped
+    ports:
+      - "8081:8081"   # Data Explorer + SQL endpoint
+      - "10250:10250" # Mongo / direct port (kept open for tooling)
+    environment:
+      PROTOCOL: https
+    volumes:
+      - cosmos-data:/tmp/cosmos/appdata
+    healthcheck:
+      test: ["CMD", "curl", "-skf", "https://localhost:8081/_explorer/emulator.pem"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    container_name: equine-azurite
+    restart: unless-stopped
+    command: >
+      azurite
+      --blobHost 0.0.0.0
+      --queueHost 0.0.0.0
+      --tableHost 0.0.0.0
+      --location /data
+      --skipApiVersionCheck
+    ports:
+      - "10000:10000" # Blob
+      - "10001:10001" # Queue
+      - "10002:10002" # Table
+    volumes:
+      - azurite-data:/data
+
+volumes:
+  cosmos-data:
+  azurite-data:

@@ -1,0 +1,145 @@
+# Build, test, and deploy the .NET 8 isolated Azure Functions API.
+#
+# Triggers on changes under the API + its referenced projects + tests.
+# Deploys on main only, gated by the matching Azure DevOps Environment so prod
+# can require manual approval (configure approvals in: Pipelines → Environments
+# → equine-api-prod → Approvals and checks).
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/EquineBooking.Api/**
+      - src/EquineBooking.Core/**
+      - src/EquineBooking.Infrastructure/**
+      - tests/**
+      - .azure-pipelines/api.yml
+      - .azure-pipelines/templates/cache-nuget.yml
+      - EquineBooking.sln
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/EquineBooking.Api/**
+      - src/EquineBooking.Core/**
+      - src/EquineBooking.Infrastructure/**
+      - tests/**
+      - .azure-pipelines/api.yml
+      - .azure-pipelines/templates/cache-nuget.yml
+
+variables:
+  - name: dotnetVersion
+    value: '8.0.x'
+  - name: buildConfiguration
+    value: 'Release'
+  - name: apiProject
+    value: 'src/EquineBooking.Api/EquineBooking.Api.csproj'
+  - name: solution
+    value: 'EquineBooking.sln'
+  # Override these by linking a Variable Group to the pipeline (Pipelines →
+  # this pipeline → Edit → Variables) or by setting them on the Environment.
+  - name: azureServiceConnection
+    value: 'azure-equine'   # workload-identity service connection name
+  - name: resourceGroup
+    value: 'WardRanch'
+  - name: functionAppName
+    value: ''               # e.g. func-equine-dev-a1b2c3 — required for deploy
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Build
+    displayName: 'Build & test'
+    jobs:
+      - job: BuildAndTest
+        displayName: 'Build, test, publish'
+        steps:
+          - task: UseDotNet@2
+            displayName: 'Install .NET SDK ${{ variables.dotnetVersion }}'
+            inputs:
+              packageType: 'sdk'
+              version: $(dotnetVersion)
+
+          - template: templates/cache-nuget.yml
+            parameters:
+              solution: $(solution)
+
+          - task: DotNetCoreCLI@2
+            displayName: 'dotnet build'
+            inputs:
+              command: 'build'
+              projects: $(solution)
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'dotnet test (with coverage)'
+            inputs:
+              command: 'test'
+              projects: 'tests/**/*.csproj'
+              arguments: >
+                --configuration $(buildConfiguration)
+                --no-build
+                --collect:"XPlat Code Coverage"
+                --logger trx
+                --results-directory $(Agent.TempDirectory)/TestResults
+              publishTestResults: true
+
+          - task: PublishCodeCoverageResults@2
+            displayName: 'Publish code coverage'
+            inputs:
+              summaryFileLocation: '$(Agent.TempDirectory)/TestResults/**/coverage.cobertura.xml'
+            condition: succeededOrFailed()
+
+          - task: DotNetCoreCLI@2
+            displayName: 'dotnet publish (Functions)'
+            inputs:
+              command: 'publish'
+              projects: $(apiProject)
+              arguments: >
+                --configuration $(buildConfiguration)
+                --no-build
+                --output $(Build.ArtifactStagingDirectory)/api
+              publishWebProjects: false
+              zipAfterPublish: true
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish API artifact'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/api'
+              artifact: 'api'
+              publishLocation: 'pipeline'
+
+  - stage: Deploy
+    displayName: 'Deploy to Functions'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployApi
+        displayName: 'Deploy Function app'
+        # The environment name is the gate for approvals — create
+        # `equine-api-prod` (or `-dev`) under Pipelines → Environments and
+        # add approvers / checks there.
+        environment: 'equine-api-prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: api
+
+                - task: AzureFunctionApp@2
+                  displayName: 'Deploy to $(functionAppName)'
+                  inputs:
+                    connectedServiceNameARM: $(azureServiceConnection)
+                    appType: 'functionAppLinux'
+                    appName: $(functionAppName)
+                    resourceGroupName: $(resourceGroup)
+                    package: '$(Pipeline.Workspace)/api/*.zip'
+                    runtimeStack: 'DOTNET-ISOLATED|8.0'
+                    deploymentMethod: 'zipDeploy'

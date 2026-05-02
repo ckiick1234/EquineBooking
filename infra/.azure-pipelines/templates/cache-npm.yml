@@ -1,0 +1,28 @@
+# Restore npm dependencies with the Azure Pipelines cache, plus the Angular
+# build cache so subsequent ng build runs reuse compilation work.
+
+parameters:
+  - name: workingDirectory
+    type: string
+    default: 'src/frontend'
+
+steps:
+  - task: Cache@2
+    displayName: 'Cache npm modules'
+    inputs:
+      key: 'npm | "$(Agent.OS)" | ${{ parameters.workingDirectory }}/package-lock.json'
+      restoreKeys: |
+        npm | "$(Agent.OS)"
+      path: ${{ parameters.workingDirectory }}/node_modules
+
+  - task: Cache@2
+    displayName: 'Cache Angular build cache'
+    inputs:
+      key: 'ng | "$(Agent.OS)" | ${{ parameters.workingDirectory }}/package-lock.json | ${{ parameters.workingDirectory }}/angular.json'
+      restoreKeys: |
+        ng | "$(Agent.OS)"
+      path: ${{ parameters.workingDirectory }}/.angular/cache
+
+  - script: npm ci --no-audit --no-fund --legacy-peer-deps
+    displayName: 'npm ci'
+    workingDirectory: ${{ parameters.workingDirectory }}

@@ -1,0 +1,43 @@
+# Build outputs
+bin/
+obj/
+out/
+dist/
+publish/
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.DS_Store
+Thumbs.db
+
+# Node / Angular
+node_modules/
+src/frontend/.angular/
+src/frontend/coverage/
+
+# Test artefacts
+TestResults/
+coverage*/
+*.coverage
+*.coveragexml
+
+# Azure Functions / local secrets — never commit real values.
+# Use src/EquineBooking.Api/local.settings.template.json as the starting point
+# and copy it to local.settings.json before first run.
+local.settings.json
+src/EquineBooking.Api/local.settings.json
+
+# Azurite local data (when run outside the docker volume)
+__azurite_*
+__blobstorage__/
+__queuestorage__/
+
+# Bicep build artefacts
+*.bicepparam.json
+infra/main.json

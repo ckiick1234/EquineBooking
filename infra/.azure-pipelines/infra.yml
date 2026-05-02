@@ -1,0 +1,161 @@
+# Validate Bicep, preview the deployment with what-if, then deploy with manual
+# approval for prod.
+#
+# Approval gates live on the Environment, not in YAML. Configure:
+#   Pipelines → Environments → equine-infra-prod → Approvals and checks
+#   Pipelines → Environments → equine-infra-dev   (no approvals needed for dev)
+#
+# Auth uses workload identity federation via the named service connection.
+# The service connection's Azure AD app must have at least Contributor +
+# User Access Administrator on the target resource group (User Access
+# Administrator is needed to create the Cosmos and Key Vault role assignments).
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/**
+      - .azure-pipelines/infra.yml
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/**
+      - .azure-pipelines/infra.yml
+
+parameters:
+  - name: targetEnv
+    displayName: 'Environment to deploy'
+    type: string
+    default: 'dev'
+    values:
+      - dev
+      - prod
+
+variables:
+  - name: azureServiceConnection
+    value: 'azure-equine'
+  - name: resourceGroup
+    value: 'WardRanch'
+  - name: location
+    value: 'westus2'
+  - name: templateFile
+    value: 'infra/main.bicep'
+  - name: parametersFile
+    value: 'infra/main.${{ parameters.targetEnv }}.bicepparam'
+  - name: deploymentName
+    value: 'equine-$(Build.BuildId)'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Validate
+    displayName: 'Lint & validate'
+    jobs:
+      - job: Validate
+        displayName: 'Bicep build + ARM validate'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'az bicep build (lint)'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+                az bicep build --file $(templateFile) --stdout > /dev/null
+                az bicep build-params --file $(parametersFile) --stdout > /dev/null
+
+          - task: AzureCLI@2
+            displayName: 'az deployment group validate'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+                az group create -n $(resourceGroup) -l $(location) -o none
+                az deployment group validate \
+                  --resource-group $(resourceGroup) \
+                  --template-file $(templateFile) \
+                  --parameters $(parametersFile) \
+                  --parameters venmoLink="$(VENMO_LINK)" repositoryToken="$(REPO_TOKEN)"
+            env:
+              # Surface secret variables explicitly so they're masked in logs.
+              VENMO_LINK: $(VENMO_LINK)
+              REPO_TOKEN: $(REPO_TOKEN)
+
+  - stage: WhatIf
+    displayName: 'Preview changes'
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - job: WhatIf
+        displayName: 'az deployment group what-if'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'what-if'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+                az deployment group what-if \
+                  --resource-group $(resourceGroup) \
+                  --name $(deploymentName) \
+                  --template-file $(templateFile) \
+                  --parameters $(parametersFile) \
+                  --parameters venmoLink="$(VENMO_LINK)" repositoryToken="$(REPO_TOKEN)" \
+                  --result-format FullResourcePayloads
+            env:
+              VENMO_LINK: $(VENMO_LINK)
+              REPO_TOKEN: $(REPO_TOKEN)
+
+  - stage: Deploy
+    displayName: 'Deploy infrastructure'
+    dependsOn: WhatIf
+    # Only run on a main-branch CI build; PR builds stop after WhatIf so reviewers
+    # can read the preview without anything actually changing.
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployInfra
+        displayName: 'Apply Bicep'
+        environment: 'equine-infra-${{ parameters.targetEnv }}'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'az deployment group create'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      set -euo pipefail
+                      az deployment group create \
+                        --resource-group $(resourceGroup) \
+                        --name $(deploymentName) \
+                        --template-file $(templateFile) \
+                        --parameters $(parametersFile) \
+                        --parameters venmoLink="$(VENMO_LINK)" repositoryToken="$(REPO_TOKEN)" \
+                        --query properties.outputs \
+                        -o json | tee deployment-outputs.json
+                  env:
+                    VENMO_LINK: $(VENMO_LINK)
+                    REPO_TOKEN: $(REPO_TOKEN)
+
+                - task: PublishPipelineArtifact@1
+                  displayName: 'Publish deployment outputs'
+                  inputs:
+                    targetPath: 'deployment-outputs.json'
+                    artifact: 'infra-outputs-${{ parameters.targetEnv }}'

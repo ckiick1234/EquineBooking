@@ -1,0 +1,130 @@
+# Build, lint, test, and deploy the Angular SPA to Azure Static Web Apps.
+#
+# The original GitHub Actions plan leaned on the SWA → GitHub built-in deploy.
+# On Azure Pipelines we drive the deploy explicitly via AzureStaticWebApp@0
+# using an SWA deployment token. Pull the token once with:
+#
+#   az staticwebapp secrets list -n <swa-name> -g <rg> \
+#     --query properties.apiKey -o tsv
+#
+# Store it as a secret variable named SWA_DEPLOY_TOKEN on the pipeline (or in a
+# linked Variable Group / Key Vault). Don't put it in the YAML.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/frontend/**
+      - .azure-pipelines/frontend.yml
+      - .azure-pipelines/templates/cache-npm.yml
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/frontend/**
+      - .azure-pipelines/frontend.yml
+      - .azure-pipelines/templates/cache-npm.yml
+
+variables:
+  - name: nodeVersion
+    value: '20.x'
+  - name: webDir
+    value: 'src/frontend'
+  - name: outputDir
+    value: 'src/frontend/dist/equine-booking-frontend'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Build
+    displayName: 'Build & test'
+    jobs:
+      - job: BuildAndTest
+        displayName: 'Lint, test, build'
+        steps:
+          - task: NodeTool@0
+            displayName: 'Install Node $(nodeVersion)'
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - template: templates/cache-npm.yml
+            parameters:
+              workingDirectory: $(webDir)
+
+          - script: npx ng lint
+            displayName: 'ng lint'
+            workingDirectory: $(webDir)
+            # The Angular CLI doesn't ship lint by default in v17+; this script
+            # tolerates that case so the pipeline doesn't fail when no linter
+            # is configured. Once you `ng add @angular-eslint/schematics`, drop
+            # the `|| true`.
+            continueOnError: true
+
+          - script: >
+              npx ng test
+              --watch=false
+              --browsers=ChromeHeadlessCI
+              --code-coverage
+              --reporters=junit,progress
+            displayName: 'ng test'
+            workingDirectory: $(webDir)
+            env:
+              CHROME_BIN: /usr/bin/google-chrome
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Karma results'
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: '$(webDir)/junit/**/TESTS-*.xml'
+              testResultsFormat: 'JUnit'
+              failTaskOnFailedTests: true
+              mergeTestResults: true
+
+          - task: PublishCodeCoverageResults@2
+            displayName: 'Publish code coverage'
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: '$(webDir)/coverage/**/cobertura-coverage.xml'
+
+          - script: npx ng build --configuration=production
+            displayName: 'ng build (production)'
+            workingDirectory: $(webDir)
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish web bundle'
+            inputs:
+              targetPath: $(outputDir)
+              artifact: 'web'
+              publishLocation: 'pipeline'
+
+  - stage: Deploy
+    displayName: 'Deploy to Static Web App'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployWeb
+        displayName: 'Deploy Angular bundle'
+        environment: 'equine-web-prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: web
+
+                - task: AzureStaticWebApp@0
+                  displayName: 'Push to SWA'
+                  inputs:
+                    workingDirectory: '$(Pipeline.Workspace)/web'
+                    app_location: '/'
+                    output_location: ''
+                    skip_app_build: true
+                    skip_api_build: true
+                    is_static_export: true
+                    azure_static_web_apps_api_token: $(SWA_DEPLOY_TOKEN)
